@@ -1,0 +1,47 @@
+:root {
+  /* Neutrals — sampled from dpworld.com (--global-neutrals-*) */
+  --color-text-primary: #1c1825;
+  --color-text-secondary: #6e6e72;
+  --color-text-strong: #0f0f19;
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #fcfaff;
+  --color-background-tertiary: #f5f1fc;
+  --color-border-tertiary: #dcdce1;
+  --color-border-secondary: #b6b6b9;
+
+  /* Brand primary — purple from DP World's leadership/India theme.
+     #3e3c90 is the dark primary (inline on the page), #5154b6 the mid,
+     #b8b6eb the light, #ececff the soft surface. */
+  --color-accent: #3e3c90;
+  --color-accent-hover: #312a82;
+  --color-accent-mid: #5154b6;
+  --color-accent-soft: #ececff;
+  --color-accent-softer: #f7f5ff;
+
+  /* Brand mid-tone for highlights (lighter purple) */
+  --color-secondary: #5154b6;
+  --color-secondary-soft: #ececff;
+
+  /* Brand dark — for wordmarks / strong text */
+  --color-brand-dark: #1c1825;
+
+  /* Semantic status — intentional, kept distinct from brand purple */
+  --color-shortlist-bg: #effdf4;
+  --color-shortlist-fg: #0a7d2f;
+  --color-review-bg: #faeeda;
+  --color-review-fg: #ba7517;
+  --color-reject-bg: #fef3f2;
+  --color-reject-fg: #a32d2d;
+
+  --color-confidence-high: #0a7d2f;
+  --color-confidence-medium: #e2a44a;
+  --color-confidence-low: #c4515b;
+
+  --radius-card: 14px;
+  --radius-chip: 999px;
+  --shadow-soft: 0 1px 2px rgba(15, 15, 25, 0.04);
+}
+
+/* Forced light theme regardless of OS preference. HR demo is read-heavy and
+   needs consistent contrast for CV review. */
+html { color-scheme: light; }

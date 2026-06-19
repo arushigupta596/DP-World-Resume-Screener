@@ -14,12 +14,17 @@ def embed_query(query: str) -> list[float]:
 
 
 def retrieve_chunks_for_candidate(
-    candidate_id: str, query: str, k: int = 3
+    candidate_id: str,
+    query: str,
+    k: int = 3,
+    query_embedding: list[float] | None = None,
 ) -> list[dict]:
-    """Top-k chunks from one candidate matching the query."""
+    """Top-k chunks from one candidate matching the query.
+    Pass a pre-computed query_embedding to skip the OpenRouter round-trip
+    (useful when the same query is reused across many candidates)."""
     if not query:
         return []
-    embedding = embed_query(query)
+    embedding = query_embedding if query_embedding is not None else embed_query(query)
     sb = get_client()
     resp = sb.rpc(
         "hybrid_search_chunks",

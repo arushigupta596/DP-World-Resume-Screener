@@ -127,6 +127,38 @@ RAG_CRITERION_HINTS = {
 }
 
 
+# Cache of (query_text, query_embedding) keyed by criterion id. Populated
+# once at startup via prime_criterion_embeddings; reused for every
+# candidate so we don't re-embed the same 5 queries on every scoring call.
+_criterion_cache: dict[str, tuple[str, list[float]]] = {}
+
+
+def _criterion_query(role: dict, cid: str) -> str:
+    criteria = role.get("scoring_criteria") or []
+    by_id = {c["id"]: c for c in criteria}
+    label = by_id.get(cid, {}).get("label", cid)
+    hint = RAG_CRITERION_HINTS.get(cid, "")
+    return f"{label}. {hint}".strip()
+
+
+def prime_criterion_embeddings(role: dict) -> int:
+    """Pre-embed all C1-C5 retrieval queries and stash in module cache.
+    Idempotent: subsequent calls overwrite the cache. Returns number of
+    criteria primed. Safe to call at startup; later scoring calls reuse
+    the cached embeddings."""
+    from services.embedder import embed_texts
+
+    cids = ("C1", "C2", "C3", "C4", "C5")
+    queries = [_criterion_query(role, cid) for cid in cids]
+    vectors = embed_texts(queries)
+
+    _criterion_cache.clear()
+    for cid, q, v in zip(cids, queries, vectors):
+        _criterion_cache[cid] = (q, v)
+    logger.info("Primed %d criterion-query embeddings", len(_criterion_cache))
+    return len(_criterion_cache)
+
+
 def _build_prompt(role: dict, cv_text: str) -> str:
     criteria = role.get("scoring_criteria") or []
     by_id = {c["id"]: c for c in criteria}
@@ -252,17 +284,25 @@ async def _build_scoring_prompt(role: dict, candidate: dict) -> str:
     failure instead of silent degradation to a different code path.
     """
     candidate_id = candidate["id"]
-    criteria = role.get("scoring_criteria") or []
-    by_id = {c["id"]: c for c in criteria}
 
     from services.retriever import retrieve_chunks_for_candidate
 
+    # Lazy-prime the cache if startup priming didn't run / failed.
+    if not _criterion_cache:
+        prime_criterion_embeddings(role)
+
     retrieved: dict[str, list[dict]] = {}
     for cid in ("C1", "C2", "C3", "C4", "C5"):
-        label = by_id.get(cid, {}).get("label", cid)
-        hint = RAG_CRITERION_HINTS.get(cid, "")
-        query = f"{label}. {hint}".strip()
-        retrieved[cid] = retrieve_chunks_for_candidate(candidate_id, query, k=3)
+        cached = _criterion_cache.get(cid)
+        if cached:
+            query_text, query_embedding = cached
+        else:
+            # Fallback: re-derive query text (no cached embedding).
+            query_text = _criterion_query(role, cid)
+            query_embedding = None
+        retrieved[cid] = retrieve_chunks_for_candidate(
+            candidate_id, query_text, k=3, query_embedding=query_embedding
+        )
 
     total_chunks = sum(len(v) for v in retrieved.values())
     if total_chunks == 0:

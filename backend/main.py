@@ -115,6 +115,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.exception("Failed to bootstrap active role: %s", e)
         app.state.active_role_id = None
+        yield
+        return
+
+    # Prime the criterion-query embedding cache so scoring calls don't
+    # pay the per-candidate retrieval-embedding cost. Non-fatal: if this
+    # fails (e.g., OpenRouter hiccup at boot), the scorer will populate
+    # the cache lazily on the first scoring call.
+    if role_id:
+        try:
+            sb = get_client()
+            role_resp = sb.table("roles").select("*").eq("id", role_id).single().execute()
+            if role_resp.data:
+                from services.scorer import prime_criterion_embeddings
+                prime_criterion_embeddings(role_resp.data)
+        except Exception as e:
+            logger.warning("Failed to prime criterion embeddings at startup: %s", e)
     yield
 
 

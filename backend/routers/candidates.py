@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from db.supabase import get_client
 from services.cv_parser import extract_candidate_name, parse_cv
+
+logger = logging.getLogger("cv-screener.candidates")
 
 router = APIRouter(tags=["candidates"])
 
@@ -67,12 +71,79 @@ def _process_one(role_id: str, file_name: str, contents: bytes) -> dict:
     inserted = sb.table("candidates").insert(row).execute()
     candidate_id = inserted.data[0]["id"] if inserted.data else None
 
+    # Best-effort embedding for RAG. If OPENAI_API_KEY is missing or the
+    # embeddings API is unreachable, log and continue — scoring will fall
+    # back to the full-CV prompt path.
+    if candidate_id and cv_text:
+        try:
+            from services.embedder import embed_and_store_candidate
+            embed_and_store_candidate(candidate_id, cv_text)
+        except Exception as e:
+            logger.warning("Embedding failed for %s: %s", candidate_id, e)
+
     result["candidate_id"] = candidate_id
     result["name"] = name
     result["status"] = row["status"]
     if row["error_msg"]:
         result["error_msg"] = row["error_msg"]
     return result
+
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: int = 20
+
+
+@router.post("/roles/{role_id}/search")
+async def search_candidates(role_id: str, payload: SearchRequest):
+    """Hybrid (vector + FTS) search across all CVs in a role."""
+    query = (payload.query or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+
+    try:
+        from services.retriever import search_role
+    except ImportError as e:
+        raise HTTPException(503, f"Search unavailable: {e}")
+
+    try:
+        hits = search_role(role_id, query, limit=payload.limit)
+    except Exception as e:
+        raise HTTPException(503, f"Search failed: {e}")
+
+    if not hits:
+        return {"results": []}
+
+    sb = get_client()
+    cand_ids = [h["candidate_id"] for h in hits]
+    cands = (
+        sb.table("candidates").select("*").in_("id", cand_ids).execute().data or []
+    )
+    by_id = {c["id"]: c for c in cands}
+
+    scores = (
+        sb.table("scores").select("*").in_("candidate_id", cand_ids).execute().data or []
+    )
+    score_by_cand: dict = {}
+    for s in scores:
+        score_by_cand.setdefault(s["candidate_id"], s)
+
+    results = []
+    for h in hits:
+        cid = h["candidate_id"]
+        cand = by_id.get(cid)
+        if not cand:
+            continue
+        results.append({
+            "candidate_id": cid,
+            "name": cand.get("name"),
+            "file_name": cand.get("file_name"),
+            "status": cand.get("status"),
+            "matched_chunk": h.get("best_chunk", ""),
+            "rrf_score": h.get("rrf_score", 0),
+            "score": score_by_cand.get(cid),
+        })
+    return {"results": results}
 
 
 @router.post("/roles/{role_id}/candidates")

@@ -333,6 +333,28 @@ table.rank tbody tr:hover { background: var(--color-background-secondary); curso
   max-width: 420px;
 }
 
+/* Hybrid search result rows */
+.search-result-row {
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-tertiary);
+  background: var(--color-background-primary);
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.search-result-row:hover {
+  background: var(--color-accent-softer);
+  border-color: var(--color-accent-soft);
+}
+.search-snippet {
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Session banner (clear prior candidates) */
 .session-banner {
   border-color: var(--color-accent-soft);

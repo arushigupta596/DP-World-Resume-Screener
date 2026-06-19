@@ -82,6 +82,31 @@ cp .env.example .env               # fill in credentials
 npm run dev                        # http://localhost:5173
 ```
 
+## Hybrid RAG (vector search)
+
+The screener caches each uploaded CV as embedded chunks in Supabase pgvector and uses **hybrid retrieval** (vector cosine + Postgres full-text search, fused with Reciprocal Rank Fusion) for two things:
+
+1. **RAG-powered scoring** — for each of C1–C5, the top-3 most relevant chunks are retrieved per criterion and passed to the LLM instead of the full CV. Smaller, focused context; better evidence.
+2. **Semantic search bar** on the Scoring page — "find candidates with Power BI dashboards" returns ranked matches with snippets.
+
+**Setup (one-time):**
+
+1. **Enable pgvector** in your Supabase project: Dashboard → Database → Extensions → search for "vector" → enable.
+2. **Run the migration**: paste `backend/sql/03_rag.sql` into the Supabase SQL editor and run.
+3. **Add `OPENAI_API_KEY`** to `backend/.env` (also to Vercel project env vars for production).
+4. **Backfill existing candidates** (optional — if you already have uploads in the DB):
+   ```
+   cd backend && source .venv/bin/activate
+   python backfill_embeddings.py
+   ```
+
+**Cost:** Embedding ~$0.02 per 1M tokens with `text-embedding-3-small`. A typical CV is ~3K tokens, so ~$0.0001 per CV. Embedding 1000 CVs costs ~$0.10.
+
+**Failure modes (graceful):**
+- No `OPENAI_API_KEY` → uploads succeed without chunks, scoring uses full-CV fallback, search bar returns 503 with a clear message.
+- `OPENAI_API_KEY` set but quota hit → same fallbacks per-call.
+- Candidate has no chunks (legacy or embedding failed) → scoring uses full-CV path automatically.
+
 ## Deploy to Vercel (frontend + backend, single project)
 
 The repo is set up as a Vercel monorepo: `vercel.json` builds the Vite frontend and `api/index.py` exposes the FastAPI app as a serverless function.

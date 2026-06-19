@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import RankTable from '../components/RankTable.jsx'
 import ScoreCard from '../components/ScoreCard.jsx'
+import SearchBar from '../components/SearchBar.jsx'
 import {
   getCandidates, getExportUrl, getScoringStatus, scoreOne, triggerScoring,
 } from '../lib/api.js'
@@ -16,6 +17,8 @@ export default function Scoring() {
   const [status, setStatus] = useState({ total: 0, pending: 0, scoring: 0, scored: 0, error: 0 })
   const [error, setError] = useState('')
   const [running, setRunning] = useState(false)
+  const [searchResults, setSearchResults] = useState(null)  // null = no search active
+  const [searchQuery, setSearchQuery] = useState('')
   const cancelRef = useRef(false)
 
   useEffect(() => {
@@ -142,13 +145,90 @@ export default function Scoring() {
       />
 
       <div style={{ marginTop: 16 }}>
-        <RankTable
-          candidates={candidates}
-          onSelect={(cid) => navigate(`/role/${roleId}/candidate/${cid}`)}
+        <SearchBar
+          roleId={roleId}
+          onResults={(results, q) => { setSearchResults(results); setSearchQuery(q) }}
+          onClear={() => { setSearchResults(null); setSearchQuery('') }}
         />
+
+        {searchResults ? (
+          <SearchResults
+            results={searchResults}
+            query={searchQuery}
+            onSelect={(cid) => navigate(`/role/${roleId}/candidate/${cid}`)}
+            onClear={() => { setSearchResults(null); setSearchQuery('') }}
+          />
+        ) : (
+          <RankTable
+            candidates={candidates}
+            onSelect={(cid) => navigate(`/role/${roleId}/candidate/${cid}`)}
+          />
+        )}
       </div>
 
       {error && <div className="error" style={{ marginTop: 16 }}>{error}</div>}
     </>
+  )
+}
+
+function SearchResults({ results, query, onSelect, onClear }) {
+  return (
+    <div className="card stack">
+      <div className="row">
+        <div>
+          <div className="h2" style={{ margin: 0 }}>
+            {results.length} match{results.length === 1 ? '' : 'es'} for "{query}"
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            Ranked by hybrid score (vector + keyword)
+          </div>
+        </div>
+        <div className="spacer" />
+        <button onClick={onClear}>Clear search</button>
+      </div>
+
+      {results.length === 0 && (
+        <div className="muted" style={{ padding: 16, textAlign: 'center' }}>
+          No candidates matched this query. Try different keywords.
+        </div>
+      )}
+
+      <div className="stack">
+        {results.map((r) => (
+          <div
+            key={r.candidate_id}
+            className="search-result-row"
+            onClick={() => onSelect?.(r.candidate_id)}
+          >
+            <div className="row" style={{ alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+                  <strong>{r.name || 'Unknown candidate'}</strong>
+                  <span className="muted" style={{ fontSize: 12 }}>{r.file_name}</span>
+                  {r.score?.recommendation && (
+                    <span className={`badge ${r.score.recommendation.toLowerCase()}`}>
+                      {r.score.recommendation}
+                    </span>
+                  )}
+                </div>
+                <div className="muted search-snippet">
+                  {r.matched_chunk}
+                </div>
+              </div>
+              <div style={{ minWidth: 90, textAlign: 'right' }}>
+                {r.score?.total_score != null && (
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>
+                    {Number(r.score.total_score).toFixed(1)}
+                  </div>
+                )}
+                <div className="muted" style={{ fontSize: 11 }}>
+                  match {(r.rrf_score * 100).toFixed(1)}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }

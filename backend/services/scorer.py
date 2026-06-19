@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import httpx
 
 from db.supabase import get_client
+
+logger = logging.getLogger("cv-screener.scorer")
 
 SCORING_PROMPT_TEMPLATE = """You are an expert HR analyst. Score the following CV for the role of {role_title} at {company}.
 Return ONLY valid JSON. No markdown, no explanation, no preamble.
@@ -112,6 +115,18 @@ async def _rate_limit_gate():
         _last_call_ts = asyncio.get_event_loop().time()
 
 
+# Per-criterion retrieval queries used for RAG. The criterion's label is
+# concatenated with a "strongest signal" hint so the embedded query matches
+# CV chunks describing the exact qualifications the rubric rewards.
+RAG_CRITERION_HINTS = {
+    "C1": "offshore marine OSV subsea offshore oil gas ports shipping energy renewables maritime",
+    "C2": "market analysis forecasting models competitor intelligence market reports trend analysis",
+    "C3": "advanced Excel modelling VBA pivot tables Power BI dashboards PowerPoint Office tools",
+    "C4": "commercial wins revenue growth new business business development commercial strategy impact",
+    "C5": "senior stakeholders VP C-level executive reporting strategic decisions board presentations",
+}
+
+
 def _build_prompt(role: dict, cv_text: str) -> str:
     criteria = role.get("scoring_criteria") or []
     by_id = {c["id"]: c for c in criteria}
@@ -137,6 +152,33 @@ def _build_prompt(role: dict, cv_text: str) -> str:
         c5_weight=weight("C5"),
         cv_text=cv_text,
     )
+
+
+def _build_rag_prompt(role: dict, retrieved_by_criterion: dict[str, list[dict]]) -> str:
+    """Variant of _build_prompt that swaps the full CV for per-criterion
+    retrieved excerpts. Excerpts are de-duplicated but tagged with the
+    criterion that retrieved them so the LLM knows what evidence supports
+    what score."""
+    sections = []
+    seen: set[str] = set()
+    for cid in ("C1", "C2", "C3", "C4", "C5"):
+        chunks = retrieved_by_criterion.get(cid) or []
+        if not chunks:
+            sections.append(f"{cid}: (no relevant excerpts retrieved)")
+            continue
+        texts = []
+        for c in chunks:
+            t = (c.get("chunk_text") or "").strip()
+            if t and t not in seen:
+                texts.append(t)
+                seen.add(t)
+        if not texts:
+            sections.append(f"{cid}: (only duplicates of earlier excerpts)")
+        else:
+            sections.append(f"{cid}:\n" + "\n---\n".join(texts))
+
+    block = "RETRIEVED CV EXCERPTS (top-K per criterion via hybrid pgvector + FTS):\n\n" + "\n\n".join(sections)
+    return _build_prompt(role, block)
 
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -202,6 +244,57 @@ def _recommendation(total: float) -> str:
     return "Reject"
 
 
+async def _build_scoring_prompt(role: dict, candidate: dict) -> str:
+    """Use hybrid RAG retrieval when chunks exist for this candidate;
+    fall back to the full-CV prompt otherwise. Retrieval failures also
+    fall back gracefully."""
+    candidate_id = candidate["id"]
+    criteria = role.get("scoring_criteria") or []
+    by_id = {c["id"]: c for c in criteria}
+
+    try:
+        from services.embedder import has_embeddings
+        from services.retriever import retrieve_chunks_for_candidate
+    except ImportError:
+        logger.warning("RAG modules unavailable; using full-CV prompt")
+        return _build_prompt(role, candidate["cv_text"])
+
+    try:
+        if not has_embeddings(candidate_id):
+            logger.info("No embeddings for %s; using full-CV prompt", candidate_id)
+            return _build_prompt(role, candidate["cv_text"])
+    except Exception as e:
+        logger.warning("has_embeddings check failed (%s); using full-CV prompt", e)
+        return _build_prompt(role, candidate["cv_text"])
+
+    retrieved: dict[str, list[dict]] = {}
+    any_hits = False
+    for cid in ("C1", "C2", "C3", "C4", "C5"):
+        label = by_id.get(cid, {}).get("label", cid)
+        hint = RAG_CRITERION_HINTS.get(cid, "")
+        query = f"{label}. {hint}".strip()
+        try:
+            chunks = retrieve_chunks_for_candidate(candidate_id, query, k=3)
+        except Exception as e:
+            logger.warning("retrieve failed for %s/%s: %s", candidate_id, cid, e)
+            chunks = []
+        retrieved[cid] = chunks
+        if chunks:
+            any_hits = True
+
+    if not any_hits:
+        # Embeddings exist but no chunks matched any query (very rare). Fall back.
+        logger.info("Embeddings exist for %s but no retrieval hits; using full-CV prompt", candidate_id)
+        return _build_prompt(role, candidate["cv_text"])
+
+    logger.info(
+        "RAG context for %s: %d unique chunks across criteria",
+        candidate_id,
+        sum(len(v) for v in retrieved.values()),
+    )
+    return _build_rag_prompt(role, retrieved)
+
+
 async def score_candidate(candidate_id: str, role: dict) -> None:
     """Background task: score one candidate against the role's criteria."""
     sb = get_client()
@@ -217,7 +310,7 @@ async def score_candidate(candidate_id: str, role: dict) -> None:
             ).eq("id", candidate_id).execute()
             return
 
-        prompt = _build_prompt(role, candidate["cv_text"])
+        prompt = await _build_scoring_prompt(role, candidate)
 
         async with _get_sem():
             sb.table("candidates").update({"status": "scoring"}).eq("id", candidate_id).execute()

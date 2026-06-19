@@ -85,3 +85,12 @@ export async function getCandidate(candidateId) {
 export function getExportUrl(roleId) {
   return `${BASE}/api/roles/${roleId}/export`
 }
+
+export async function searchCandidates(roleId, query, limit = 20) {
+  const res = await fetch(`${BASE}/api/roles/${roleId}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, limit }),
+  })
+  return handle(res)
+}

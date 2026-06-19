@@ -1,22 +1,26 @@
-"""Resume chunking + embedding service. Stores chunks + 1536-dim vectors in
-the `resume_chunks` table (pgvector).
+"""Resume chunking + embedding via OpenRouter. Stores chunks + 1536-dim
+vectors in the `resume_chunks` table (pgvector).
 
-Embedding provider: OpenAI text-embedding-3-small. If OPENAI_API_KEY is not
-set, embedding calls raise so the caller can fall back gracefully.
+Single API key path: reuses OPENROUTER_API_KEY + OPENROUTER_BASE_URL. The
+chosen embedding model must be one that OpenRouter routes (e.g.,
+`openai/text-embedding-3-small`).
+
+Demo policy: NO fallbacks. If anything goes wrong (missing key, model
+mismatch, API error), exceptions propagate so the recruiter sees an
+honest error instead of silent skips.
 """
 from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable
 
-from openai import OpenAI
+import httpx
 
 from db.supabase import get_client
 
 logger = logging.getLogger("cv-screener.embedder")
 
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 EMBEDDING_DIM = 1536
 
 # Character-window chunking. ~1500 chars ≈ ~500 tokens; 200-char overlap
@@ -24,25 +28,9 @@ EMBEDDING_DIM = 1536
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
 
-_client: OpenAI | None = None
-
-
-def _get_openai() -> OpenAI:
-    global _client
-    if _client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set; cannot embed")
-        _client = OpenAI(api_key=api_key)
-    return _client
-
 
 def chunk_cv_text(text: str) -> list[str]:
-    """Sliding window chunks. Handles short CVs (returns single chunk).
-
-    Splits on character count rather than token count for simplicity — the
-    overlap window catches sentence boundaries near the seams.
-    """
+    """Sliding-window chunks. Single-chunk passthrough for short CVs."""
     if not text:
         return []
     text = text.strip()
@@ -61,33 +49,59 @@ def chunk_cv_text(text: str) -> list[str]:
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Single batched call to the embeddings API."""
+    """Batched embedding call via OpenRouter's OpenAI-compatible endpoint."""
     if not texts:
         return []
-    client = _get_openai()
-    resp = client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
-    # API guarantees ordering matches input order.
-    return [d.embedding for d in resp.data]
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not set; cannot embed")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"model": EMBEDDING_MODEL, "input": texts}
+
+    with httpx.Client(timeout=60.0) as client:
+        resp = client.post(f"{base_url}/embeddings", json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    entries = data.get("data") or []
+    if len(entries) != len(texts):
+        raise RuntimeError(
+            f"Embedding count mismatch: got {len(entries)} for {len(texts)} inputs"
+        )
+    return [e["embedding"] for e in entries]
+
+
+def has_embeddings(candidate_id: str) -> bool:
+    """Idempotency helper for the backfill script. Not used at scoring time."""
+    sb = get_client()
+    resp = (
+        sb.table("resume_chunks")
+        .select("id", count="exact")
+        .eq("candidate_id", candidate_id)
+        .limit(1)
+        .execute()
+    )
+    count = resp.count or len(resp.data or [])
+    return count > 0
 
 
 def embed_and_store_candidate(candidate_id: str, cv_text: str) -> int:
-    """Chunk a candidate's CV, embed all chunks in one API call, bulk-insert
-    rows into resume_chunks. Returns the number of chunks stored.
-
-    No-op (returns 0) when cv_text is empty.
-    """
+    """Chunk → embed → bulk-insert. Returns chunk count.
+    Raises on any failure (no silent fallback)."""
     chunks = chunk_cv_text(cv_text or "")
     if not chunks:
-        return 0
+        raise RuntimeError("No CV text to embed")
 
     vectors = embed_texts(chunks)
-    if len(vectors) != len(chunks):
-        raise RuntimeError("Embedding count mismatch")
 
     sb = get_client()
-    # Delete any prior chunks for this candidate so re-uploads are clean.
     sb.table("resume_chunks").delete().eq("candidate_id", candidate_id).execute()
-
     rows = [
         {
             "candidate_id": candidate_id,
@@ -100,16 +114,3 @@ def embed_and_store_candidate(candidate_id: str, cv_text: str) -> int:
     sb.table("resume_chunks").insert(rows).execute()
     logger.info("Embedded %d chunks for candidate %s", len(rows), candidate_id)
     return len(rows)
-
-
-def has_embeddings(candidate_id: str) -> bool:
-    sb = get_client()
-    resp = (
-        sb.table("resume_chunks")
-        .select("id", count="exact")
-        .eq("candidate_id", candidate_id)
-        .limit(1)
-        .execute()
-    )
-    count = resp.count or len(resp.data or [])
-    return count > 0

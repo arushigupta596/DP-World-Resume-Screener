@@ -71,15 +71,11 @@ def _process_one(role_id: str, file_name: str, contents: bytes) -> dict:
     inserted = sb.table("candidates").insert(row).execute()
     candidate_id = inserted.data[0]["id"] if inserted.data else None
 
-    # Best-effort embedding for RAG. If OPENAI_API_KEY is missing or the
-    # embeddings API is unreachable, log and continue — scoring will fall
-    # back to the full-CV prompt path.
+    # RAG-only: embed every newly-inserted CV before returning. If this
+    # fails the caller sees a 500 — demo policy is no silent fallbacks.
     if candidate_id and cv_text:
-        try:
-            from services.embedder import embed_and_store_candidate
-            embed_and_store_candidate(candidate_id, cv_text)
-        except Exception as e:
-            logger.warning("Embedding failed for %s: %s", candidate_id, e)
+        from services.embedder import embed_and_store_candidate
+        embed_and_store_candidate(candidate_id, cv_text)
 
     result["candidate_id"] = candidate_id
     result["name"] = name
@@ -101,16 +97,8 @@ async def search_candidates(role_id: str, payload: SearchRequest):
     if not query:
         raise HTTPException(400, "query is required")
 
-    try:
-        from services.retriever import search_role
-    except ImportError as e:
-        raise HTTPException(503, f"Search unavailable: {e}")
-
-    try:
-        hits = search_role(role_id, query, limit=payload.limit)
-    except Exception as e:
-        raise HTTPException(503, f"Search failed: {e}")
-
+    from services.retriever import search_role
+    hits = search_role(role_id, query, limit=payload.limit)
     if not hits:
         return {"results": []}
 

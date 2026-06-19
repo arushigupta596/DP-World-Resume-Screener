@@ -245,53 +245,32 @@ def _recommendation(total: float) -> str:
 
 
 async def _build_scoring_prompt(role: dict, candidate: dict) -> str:
-    """Use hybrid RAG retrieval when chunks exist for this candidate;
-    fall back to the full-CV prompt otherwise. Retrieval failures also
-    fall back gracefully."""
+    """RAG-only scoring prompt. No fallback (demo policy).
+
+    Embeddings MUST exist for the candidate before scoring runs. Per-
+    criterion retrieval errors propagate so the recruiter sees an honest
+    failure instead of silent degradation to a different code path.
+    """
     candidate_id = candidate["id"]
     criteria = role.get("scoring_criteria") or []
     by_id = {c["id"]: c for c in criteria}
 
-    try:
-        from services.embedder import has_embeddings
-        from services.retriever import retrieve_chunks_for_candidate
-    except ImportError:
-        logger.warning("RAG modules unavailable; using full-CV prompt")
-        return _build_prompt(role, candidate["cv_text"])
-
-    try:
-        if not has_embeddings(candidate_id):
-            logger.info("No embeddings for %s; using full-CV prompt", candidate_id)
-            return _build_prompt(role, candidate["cv_text"])
-    except Exception as e:
-        logger.warning("has_embeddings check failed (%s); using full-CV prompt", e)
-        return _build_prompt(role, candidate["cv_text"])
+    from services.retriever import retrieve_chunks_for_candidate
 
     retrieved: dict[str, list[dict]] = {}
-    any_hits = False
     for cid in ("C1", "C2", "C3", "C4", "C5"):
         label = by_id.get(cid, {}).get("label", cid)
         hint = RAG_CRITERION_HINTS.get(cid, "")
         query = f"{label}. {hint}".strip()
-        try:
-            chunks = retrieve_chunks_for_candidate(candidate_id, query, k=3)
-        except Exception as e:
-            logger.warning("retrieve failed for %s/%s: %s", candidate_id, cid, e)
-            chunks = []
-        retrieved[cid] = chunks
-        if chunks:
-            any_hits = True
+        retrieved[cid] = retrieve_chunks_for_candidate(candidate_id, query, k=3)
 
-    if not any_hits:
-        # Embeddings exist but no chunks matched any query (very rare). Fall back.
-        logger.info("Embeddings exist for %s but no retrieval hits; using full-CV prompt", candidate_id)
-        return _build_prompt(role, candidate["cv_text"])
-
-    logger.info(
-        "RAG context for %s: %d unique chunks across criteria",
-        candidate_id,
-        sum(len(v) for v in retrieved.values()),
-    )
+    total_chunks = sum(len(v) for v in retrieved.values())
+    if total_chunks == 0:
+        raise RuntimeError(
+            f"No RAG context for candidate {candidate_id}. "
+            "Run backfill_embeddings.py or re-upload the CV."
+        )
+    logger.info("RAG context for %s: %d chunks across C1-C5", candidate_id, total_chunks)
     return _build_rag_prompt(role, retrieved)
 
 

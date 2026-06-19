@@ -49,7 +49,7 @@ def main() -> None:
     role_id = role["id"]
 
     print("Hydrating role with preloaded resumes...")
-    r = requests.post(f"{BACKEND}/api/roles/{role_id}/load-preloaded", timeout=60)
+    r = requests.post(f"{BACKEND}/api/roles/{role_id}/load-preloaded", timeout=300.0)
     print("  load:", r.json())
 
     print("Fetching candidates from DB...")

@@ -154,7 +154,7 @@ export default function UploadCVs() {
               <div className="row" style={{ gap: 8, marginBottom: 4 }}>
                 <PreloadIcon />
                 <span className="h2" style={{ margin: 0 }}>
-                  Pre-cached resumes ({preloadInfo.count})
+                  Uploaded resumes
                 </span>
                 {preloadResult && (
                   <span className="badge shortlist">
@@ -191,7 +191,7 @@ export default function UploadCVs() {
               <button className="primary" onClick={handleLoadPreloaded} disabled={preloading}>
                 {preloading
                   ? <><span className="spinner" />&nbsp;Loading…</>
-                  : `Load ${preloadInfo.count} pre-cached resumes`}
+                  : 'Load the resumes'}
               </button>
             )}
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import pathlib
 from contextlib import asynccontextmanager
 
@@ -134,7 +135,15 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="DP World CV Screener", version="0.3.0", lifespan=lifespan)
+app = FastAPI(
+    title="DP World CV Screener",
+    version="0.3.0",
+    lifespan=lifespan,
+    # On Vercel's experimentalServices model the backend is mounted at
+    # /_/backend; set ROOT_PATH=/_/backend in that env so FastAPI generates
+    # correct URLs (docs, redirects, etc.). Empty in local dev.
+    root_path=os.getenv("ROOT_PATH", ""),
+)
 
 app.add_middleware(
     CORSMiddleware,

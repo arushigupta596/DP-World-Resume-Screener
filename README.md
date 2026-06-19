@@ -119,9 +119,14 @@ python scripts/build_preloaded_cache.py /path/to/folder/of/cvs
 
 **Demo policy: no fallbacks.** RAG is required. If embeddings fail, uploads and scoring fail loudly. This is intentional — the demo should surface real errors instead of silently degrading to a different code path.
 
-## Deploy to Vercel (frontend + backend, single project)
+## Deploy to Vercel (multi-service project)
 
-The repo is set up as a Vercel monorepo: `vercel.json` builds the Vite frontend and `api/index.py` exposes the FastAPI app as a serverless function.
+The repo uses Vercel's `experimentalServices` model so the Vite frontend and the FastAPI backend deploy as **separate services in the same project**:
+
+- `frontend/` service: built with `npm run build`, served at `/`.
+- `backend/` service: FastAPI app served at `/_/backend/*`.
+
+The frontend talks to the backend via `/_/backend/api/...`. This is set by the `VITE_API_BASE` environment variable on Vercel.
 
 **One-time prep (locally):**
 ```
@@ -136,8 +141,8 @@ This calls the LLM once to extract criteria from `data/JD.docx`, inserts the rol
 2. Vercel dashboard → New Project → import the repo.
 3. Framework Preset: Other (vercel.json handles everything).
 4. Add environment variables in Project Settings:
-   - Backend: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`
-   - Frontend: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE=` (leave empty for same-origin)
+   - Backend: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`, `EMBEDDING_MODEL`
+   - Frontend: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, **`VITE_API_BASE=/_/backend`** (matches the backend service's routePrefix)
 5. Deploy.
 
 **Serverless architecture notes:**

@@ -1,4 +1,8 @@
-const BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+// Use the configured base in dev (Vite proxy not set up; talks to a separate
+// uvicorn). In production (Vercel), VITE_API_BASE is empty so requests go
+// same-origin and the rewrite rule in vercel.json routes /api/* to the
+// serverless function.
+const BASE = import.meta.env.VITE_API_BASE ?? ''
 
 async function handle(res) {
   if (!res.ok) {
@@ -37,53 +41,19 @@ export async function extractJD({ jdText, file }) {
   return handle(res)
 }
 
+export async function uploadOne(roleId, file) {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BASE}/api/roles/${roleId}/candidates/single`, {
+    method: 'POST',
+    body: form,
+  })
+  return handle(res)
+}
+
 export async function clearCandidates(roleId) {
   const res = await fetch(`${BASE}/api/roles/${roleId}/candidates`, { method: 'DELETE' })
   return handle(res)
-}
-
-export async function uploadCVs(roleId, files) {
-  const form = new FormData()
-  files.forEach((f) => form.append('files', f))
-  const res = await fetch(`${BASE}/api/roles/${roleId}/candidates`, {
-    method: 'POST',
-    body: form,
-  })
-  return handle(res)
-}
-
-export async function uploadCVsStream(roleId, files, onEvent) {
-  const form = new FormData()
-  files.forEach((f) => form.append('files', f))
-  const res = await fetch(`${BASE}/api/roles/${roleId}/candidates/stream`, {
-    method: 'POST',
-    body: form,
-  })
-  if (!res.ok || !res.body) {
-    const body = await res.text().catch(() => '')
-    throw new Error(body || `${res.status} ${res.statusText}`)
-  }
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() || ''
-    for (const part of parts) {
-      const line = part.trim()
-      if (!line.startsWith('data:')) continue
-      const json = line.slice(5).trim()
-      if (!json) continue
-      try {
-        onEvent(JSON.parse(json))
-      } catch {
-        // ignore malformed chunk; backend always sends valid JSON
-      }
-    }
-  }
 }
 
 export async function getCandidates(roleId) {
@@ -92,7 +62,13 @@ export async function getCandidates(roleId) {
 }
 
 export async function triggerScoring(roleId) {
+  // Backend returns the list of candidate ids that still need scoring.
   const res = await fetch(`${BASE}/api/roles/${roleId}/score`, { method: 'POST' })
+  return handle(res)
+}
+
+export async function scoreOne(candidateId) {
+  const res = await fetch(`${BASE}/api/candidates/${candidateId}/score`, { method: 'POST' })
   return handle(res)
 }
 

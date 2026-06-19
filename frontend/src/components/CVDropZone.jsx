@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { uploadCVsStream } from '../lib/api.js'
+import { uploadOne } from '../lib/api.js'
 
 const ACCEPT = '.pdf,.docx,.txt'
 const MAX_FILES = 100
@@ -56,33 +56,40 @@ export default function CVDropZone({ roleId, onUploaded }) {
     setError('')
     if (!files.length) return
     setUploading(true)
-    setFiles((prev) => prev.map((f) => ({ ...f, status: 'uploading' })))
-    const byName = new Map(files.map((f, idx) => [f.file.name, idx]))
+    setFiles((prev) => prev.map((f) => ({ ...f, status: 'queued' })))
     const results = []
     try {
-      await uploadCVsStream(
-        roleId,
-        files.map((f) => f.file),
-        (evt) => {
-          if (evt.event === 'file') {
-            const idx = byName.get(evt.file_name)
-            if (idx != null) {
-              setFiles((prev) => {
-                const copy = [...prev]
-                copy[idx] = {
-                  ...copy[idx],
-                  status: evt.status,
-                  name: evt.name,
-                  candidate_id: evt.candidate_id,
-                  error_msg: evt.error_msg,
-                }
-                return copy
-              })
-            }
-            results.push(evt)
+      for (let idx = 0; idx < files.length; idx++) {
+        setFiles((prev) => {
+          const copy = [...prev]
+          if (copy[idx]) copy[idx] = { ...copy[idx], status: 'uploading' }
+          return copy
+        })
+        let result
+        try {
+          result = await uploadOne(roleId, files[idx].file)
+        } catch (e) {
+          result = {
+            file_name: files[idx].file.name,
+            status: 'error',
+            error_msg: e.message || 'Upload failed',
           }
         }
-      )
+        setFiles((prev) => {
+          const copy = [...prev]
+          if (copy[idx]) {
+            copy[idx] = {
+              ...copy[idx],
+              status: result.status,
+              name: result.name,
+              candidate_id: result.candidate_id,
+              error_msg: result.error_msg,
+            }
+          }
+          return copy
+        })
+        results.push(result)
+      }
       onUploaded?.(results)
     } catch (e) {
       setError(e.message || 'Upload failed')

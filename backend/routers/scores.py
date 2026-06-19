@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
@@ -11,17 +9,18 @@ from services.scorer import score_candidate
 
 router = APIRouter(tags=["scores"])
 
-# Keep strong references to in-flight tasks so the asyncio loop doesn't GC them.
-_active_tasks: set[asyncio.Task] = set()
-
 
 @router.post("/roles/{role_id}/score")
-async def trigger_scoring(role_id: str):
+async def list_pending_candidates(role_id: str):
+    """Return the ids of candidates that still need scoring.
+
+    Frontend drives the scoring loop on Vercel (one fetch per candidate to
+    keep each request inside the function timeout).
+    """
     sb = get_client()
-    role_resp = sb.table("roles").select("*").eq("id", role_id).single().execute()
+    role_resp = sb.table("roles").select("id").eq("id", role_id).single().execute()
     if not role_resp.data:
         raise HTTPException(404, "Role not found")
-    role = role_resp.data
 
     cands = (
         sb.table("candidates")
@@ -32,17 +31,35 @@ async def trigger_scoring(role_id: str):
         .data
         or []
     )
+    return {"pending": [c["id"] for c in cands if c.get("id")]}
 
-    queued = 0
-    for c in cands:
-        if not c.get("id"):
-            continue
-        task = asyncio.create_task(score_candidate(c["id"], role))
-        _active_tasks.add(task)
-        task.add_done_callback(_active_tasks.discard)
-        queued += 1
 
-    return {"queued": queued}
+@router.post("/candidates/{candidate_id}/score")
+async def score_one(candidate_id: str):
+    """Score a single candidate synchronously. Each call is one LLM round-trip
+    (~6-15s typical) plus the Supabase write. Fits well inside Vercel's 60s
+    Hobby-tier function timeout.
+    """
+    sb = get_client()
+    cand = sb.table("candidates").select("role_id").eq("id", candidate_id).single().execute()
+    if not cand.data:
+        raise HTTPException(404, "Candidate not found")
+    role_resp = sb.table("roles").select("*").eq("id", cand.data["role_id"]).single().execute()
+    if not role_resp.data:
+        raise HTTPException(500, "Candidate's role missing")
+
+    await score_candidate(candidate_id, role_resp.data)
+
+    score_resp = (
+        sb.table("scores")
+        .select("*")
+        .eq("candidate_id", candidate_id)
+        .order("scored_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    cand_resp = sb.table("candidates").select("status, error_msg, name").eq("id", candidate_id).single().execute()
+    return {"candidate": cand_resp.data, "score": score_resp.data[0] if score_resp.data else None}
 
 
 @router.get("/roles/{role_id}/score/status")
@@ -96,9 +113,7 @@ async def export_excel(role_id: str):
 
     enriched = [{**c, "score": scores_by_cand.get(c["id"])} for c in cands]
     blob = generate_excel(role, enriched)
-    headers = {
-        "Content-Disposition": f'attachment; filename="scores_{role_id}.xlsx"'
-    }
+    headers = {"Content-Disposition": f'attachment; filename="scores_{role_id}.xlsx"'}
     return Response(
         content=blob,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

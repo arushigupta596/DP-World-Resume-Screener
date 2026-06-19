@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import uuid
-from typing import AsyncGenerator
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
 
 from db.supabase import get_client
 from services.cv_parser import extract_candidate_name, parse_cv
@@ -91,26 +87,13 @@ async def upload_candidates(role_id: str, files: list[UploadFile] = File(...)):
     return {"results": results}
 
 
-@router.post("/roles/{role_id}/candidates/stream")
-async def upload_candidates_stream(role_id: str, files: list[UploadFile] = File(...)):
-    if len(files) > MAX_FILES:
-        raise HTTPException(400, f"Max {MAX_FILES} files per upload")
-
-    # Read everything up front; the request body must be consumed before we
-    # start streaming back the response.
-    prepared = []
-    for f in files:
-        prepared.append((f.filename or "unnamed", await f.read()))
-
-    async def event_stream() -> AsyncGenerator[bytes, None]:
-        for idx, (file_name, contents) in enumerate(prepared):
-            result = await asyncio.to_thread(_process_one, role_id, file_name, contents)
-            payload = json.dumps({"event": "file", "index": idx, **result})
-            yield f"data: {payload}\n\n".encode("utf-8")
-        done = json.dumps({"event": "done", "total": len(prepared)})
-        yield f"data: {done}\n\n".encode("utf-8")
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+@router.post("/roles/{role_id}/candidates/single")
+async def upload_one(role_id: str, file: UploadFile = File(...)):
+    """One file per request. Frontend loops over the user's selection and
+    calls this once per file so each request stays well inside Vercel's
+    serverless function timeout."""
+    contents = await file.read()
+    return _process_one(role_id, file.filename or "unnamed", contents)
 
 
 @router.delete("/roles/{role_id}/candidates")

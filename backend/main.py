@@ -22,18 +22,30 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent
 JD_PATH = BACKEND_DIR / "data" / "JD.docx"
+SEED_PATH = BACKEND_DIR / "data" / "role_seed.json"
 SIDECAR_PATH = BACKEND_DIR / "data" / "active_role.json"
 
 
 async def bootstrap_active_role() -> str:
-    """Ensure a fixed active role exists; return its id.
+    """Return the active role id.
 
-    Idempotency: a sidecar file caches (role_id, jd_hash). If JD.docx is
-    unchanged and the cached role still exists, reuse it. If no sidecar
-    exists but Supabase already has roles, adopt the most recently created
-    one to preserve any in-progress work. Otherwise extract JD via the
-    LLM and insert a fresh role.
+    On Vercel (and any read-only filesystem), this just reads role_seed.json
+    (committed to the repo). For local dev, the sidecar approach + LLM
+    fallback is preserved.
     """
+    # Production path: pre-baked seed, no LLM call, no filesystem writes.
+    if SEED_PATH.exists():
+        try:
+            seed = json.loads(SEED_PATH.read_text())
+        except json.JSONDecodeError:
+            seed = {}
+        role_id = seed.get("role_id")
+        if role_id:
+            logger.info("Active role from role_seed.json: %s", role_id)
+            return role_id
+        logger.warning("role_seed.json present but missing role_id; falling back")
+
+    # Local-dev fallback: existing sidecar + LLM bootstrap logic.
     if not JD_PATH.exists():
         raise RuntimeError(f"JD file missing at {JD_PATH}")
 
@@ -52,11 +64,7 @@ async def bootstrap_active_role() -> str:
             if check.data:
                 logger.info("Reusing cached active role %s (JD hash matches)", role_id)
                 return role_id
-            logger.warning("Sidecar role %s missing in DB; will re-seed", role_id)
-        else:
-            logger.info("JD hash changed or sidecar incomplete; re-seeding role")
 
-    # No valid sidecar. Look for an existing role to adopt (preserves prior runs).
     existing = (
         sb.table("roles")
         .select("id, created_at")
@@ -67,15 +75,16 @@ async def bootstrap_active_role() -> str:
     )
     if existing:
         role_id = existing[0]["id"]
-        SIDECAR_PATH.write_text(json.dumps({"role_id": role_id, "jd_hash": jd_hash}, indent=2))
-        logger.info("Adopted existing role %s as active role (sidecar written)", role_id)
+        try:
+            SIDECAR_PATH.write_text(json.dumps({"role_id": role_id, "jd_hash": jd_hash}))
+        except OSError:
+            pass  # read-only fs (Vercel) — caller falls through to seed-based bootstrap next deploy
+        logger.info("Adopted existing role %s as active role", role_id)
         return role_id
 
-    # Fresh seed via LLM.
     jd_text = parse_jd(jd_bytes, JD_PATH.name)
     logger.info("Extracting JD via LLM (jd length=%d chars)", len(jd_text))
     parsed = await extract_jd(jd_text)
-
     insert_payload = {
         "title": parsed.get("title") or "Market Research Analyst",
         "company": parsed.get("company"),
@@ -90,7 +99,10 @@ async def bootstrap_active_role() -> str:
     if not inserted.data:
         raise RuntimeError("Failed to insert seeded role")
     role_id = inserted.data[0]["id"]
-    SIDECAR_PATH.write_text(json.dumps({"role_id": role_id, "jd_hash": jd_hash}, indent=2))
+    try:
+        SIDECAR_PATH.write_text(json.dumps({"role_id": role_id, "jd_hash": jd_hash}))
+    except OSError:
+        pass
     logger.info("Active role seeded: %s (JD hash: %s…)", role_id, jd_hash[:8])
     return role_id
 
@@ -106,7 +118,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="DP World CV Screener", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="DP World CV Screener", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -82,6 +82,32 @@ cp .env.example .env               # fill in credentials
 npm run dev                        # http://localhost:5173
 ```
 
+## Deploy to Vercel (frontend + backend, single project)
+
+The repo is set up as a Vercel monorepo: `vercel.json` builds the Vite frontend and `api/index.py` exposes the FastAPI app as a serverless function.
+
+**One-time prep (locally):**
+```
+cd backend
+source .venv/bin/activate
+python seed_role.py
+```
+This calls the LLM once to extract criteria from `data/JD.docx`, inserts the role into Supabase, and writes `data/role_seed.json`. **Commit the resulting `role_seed.json`** — Vercel cold starts read it so no LLM call is needed on boot. Re-run any time `JD.docx` changes.
+
+**Deploy steps:**
+1. Push the repo to GitHub (already done if you cloned).
+2. Vercel dashboard → New Project → import the repo.
+3. Framework Preset: Other (vercel.json handles everything).
+4. Add environment variables in Project Settings:
+   - Backend: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`
+   - Frontend: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE=` (leave empty for same-origin)
+5. Deploy.
+
+**Serverless architecture notes:**
+- Scoring is **frontend-driven**: the Scoring page calls `POST /api/candidates/:id/score` once per candidate, with up to 3 in flight at a time. Each request is one LLM call (~6-15s typical) — well within the Hobby tier's 60s function timeout. Closing the browser tab pauses the loop; reopening it resumes from where it left off (only pending/error candidates get re-queued).
+- Uploads are **per-file POSTs** to `/api/roles/:id/candidates/single`. The frontend uploads one file at a time and updates progress as each completes.
+- The active role is pinned by `backend/data/role_seed.json`. No LLM call on cold start.
+
 ## File-type support
 
 - **CV uploads:** `.pdf` (digital only — scanned PDFs are flagged as errors, not OCR'd), `.docx`, `.txt`.

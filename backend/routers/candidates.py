@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import pathlib
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -15,6 +17,9 @@ router = APIRouter(tags=["candidates"])
 
 MAX_FILES = 100
 STORAGE_BUCKET = "cvs"
+
+BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
+PRELOADED_PATH = BACKEND_DIR / "data" / "preloaded_resumes.json"
 
 
 def _content_type_for(file_name: str) -> str:
@@ -185,6 +190,92 @@ async def upload_one(role_id: str, file: UploadFile = File(...)):
     serverless function timeout."""
     contents = await file.read()
     return _process_one(role_id, file.filename or "unnamed", contents)
+
+
+@router.get("/preloaded-resumes/info")
+async def preloaded_info():
+    """How many pre-cached resumes ship with this build."""
+    if not PRELOADED_PATH.exists():
+        return {"available": False, "count": 0}
+    try:
+        data = json.loads(PRELOADED_PATH.read_text())
+    except Exception:
+        return {"available": False, "count": 0}
+    return {"available": True, "count": len(data)}
+
+
+@router.post("/roles/{role_id}/load-preloaded")
+async def load_preloaded(role_id: str):
+    """Hydrate the active role with the pre-cached resume set shipped at
+    backend/data/preloaded_resumes.json. Each entry brings its own chunk
+    embeddings — zero OpenRouter calls. Dedups against existing
+    candidates for this role using cv_text_hash (skips already-loaded
+    ones)."""
+    if not PRELOADED_PATH.exists():
+        raise HTTPException(404, "No preloaded resume cache present")
+
+    entries = json.loads(PRELOADED_PATH.read_text())
+    if not entries:
+        return {"loaded": 0, "skipped": 0}
+
+    sb = get_client()
+
+    # Find which hashes are already present in this role so we can skip.
+    hashes = [e["cv_text_hash"] for e in entries if e.get("cv_text_hash")]
+    existing = (
+        sb.table("candidates")
+        .select("cv_text_hash")
+        .eq("role_id", role_id)
+        .in_("cv_text_hash", hashes)
+        .execute()
+        .data
+        or []
+    )
+    already = {r["cv_text_hash"] for r in existing if r.get("cv_text_hash")}
+
+    def _strip_nul(s):
+        return s.replace("\x00", "") if isinstance(s, str) else s
+
+    loaded = 0
+    skipped = 0
+    for e in entries:
+        h = e.get("cv_text_hash")
+        if h in already:
+            skipped += 1
+            continue
+
+        cand_row = {
+            "role_id": role_id,
+            "name": _strip_nul(e.get("parsed_name")),
+            "cv_text": _strip_nul(e.get("cv_text")),
+            "cv_text_hash": h,
+            "cv_file_path": None,  # File not in Storage; cache is metadata-only.
+            "file_name": e.get("file_name"),
+            "status": "pending",
+            "error_msg": None,
+        }
+        inserted = sb.table("candidates").insert(cand_row).execute()
+        if not inserted.data:
+            continue
+        cand_id = inserted.data[0]["id"]
+
+        chunks = e.get("chunks") or []
+        if chunks:
+            rows = [
+                {
+                    "candidate_id": cand_id,
+                    "chunk_index": c.get("chunk_index", i),
+                    "chunk_text": _strip_nul(c.get("chunk_text", "")),
+                    "embedding": c.get("embedding"),
+                }
+                for i, c in enumerate(chunks)
+            ]
+            sb.table("resume_chunks").insert(rows).execute()
+
+        loaded += 1
+
+    logger.info("Preloaded resumes: loaded=%d skipped=%d", loaded, skipped)
+    return {"loaded": loaded, "skipped": skipped, "total_in_cache": len(entries)}
 
 
 @router.delete("/roles/{role_id}/candidates")

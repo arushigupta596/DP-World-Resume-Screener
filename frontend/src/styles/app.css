@@ -355,6 +355,12 @@ table.rank tbody tr:hover { background: var(--color-background-secondary); curso
   overflow: hidden;
 }
 
+/* Preload banner on Upload page */
+.preload-banner {
+  background: var(--color-accent-softer);
+  border-color: var(--color-accent-soft);
+}
+
 /* Session banner (clear prior candidates) */
 .session-banner {
   border-color: var(--color-accent-soft);

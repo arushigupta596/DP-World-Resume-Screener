@@ -86,6 +86,16 @@ export function getExportUrl(roleId) {
   return `${BASE}/api/roles/${roleId}/export`
 }
 
+export async function getPreloadedInfo() {
+  const res = await fetch(`${BASE}/api/preloaded-resumes/info`)
+  return handle(res)
+}
+
+export async function loadPreloaded(roleId) {
+  const res = await fetch(`${BASE}/api/roles/${roleId}/load-preloaded`, { method: 'POST' })
+  return handle(res)
+}
+
 export async function searchCandidates(roleId, query, limit = 20) {
   const res = await fetch(`${BASE}/api/roles/${roleId}/search`, {
     method: 'POST',

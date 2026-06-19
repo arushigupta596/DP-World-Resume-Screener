@@ -106,6 +106,17 @@ Embeddings are routed through **OpenRouter** using the same `OPENROUTER_API_KEY`
 
 **Re-upload dedup:** identical CV text (whitespace-normalized) shares chunks via the `cv_text_hash` column. Cache hit on a re-upload is ~100ms (a row copy) instead of ~2s (an OpenRouter embeddings call).
 
+### Pre-cached resume set
+
+`backend/data/preloaded_resumes.json` ships with the repo: parsed text + chunk embeddings for the 50 DP World market-research candidates from the OneDrive folder. The Upload page exposes a **"Load X pre-cached resumes"** button that inserts these into the active role directly — no PDF re-upload, no OpenRouter calls. Each preload of all 50 takes ~5 seconds.
+
+To rebuild the cache (after JD criteria change, or with a different candidate set):
+
+```
+cd backend && source .venv/bin/activate
+python scripts/build_preloaded_cache.py /path/to/folder/of/cvs
+```
+
 **Demo policy: no fallbacks.** RAG is required. If embeddings fail, uploads and scoring fail loudly. This is intentional — the demo should surface real errors instead of silently degrading to a different code path.
 
 ## Deploy to Vercel (frontend + backend, single project)

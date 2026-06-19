@@ -32,6 +32,8 @@ def parse_cv(file_bytes: bytes, file_name: str) -> str:
         raise ValueError(f"Unsupported file type: {file_name}")
 
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    # Postgres TEXT can't contain NUL bytes; some PDF extractions sneak them in.
+    text = text.replace("\x00", "")
     return text[:MAX_CHARS]
 
 

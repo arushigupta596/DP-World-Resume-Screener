@@ -1,8 +1,14 @@
-// Use the configured base in dev (Vite proxy not set up; talks to a separate
-// uvicorn). In production (Vercel), VITE_API_BASE is empty so requests go
-// same-origin and the rewrite rule in vercel.json routes /api/* to the
-// serverless function.
-const BASE = import.meta.env.VITE_API_BASE ?? ''
+// API base resolution:
+//   - Explicit VITE_API_BASE env var wins (set to http://localhost:8000 in
+//     local dev, set in Vercel project settings for prod overrides).
+//   - In production builds without an env var, default to /_/backend so the
+//     experimentalServices routing reaches the FastAPI service.
+//   - In dev without an env var, fall back to empty (same-origin).
+const _envBase = import.meta.env.VITE_API_BASE
+const BASE =
+  _envBase !== undefined && _envBase !== ''
+    ? _envBase
+    : import.meta.env.PROD ? '/_/backend' : ''
 
 async function handle(res) {
   if (!res.ok) {

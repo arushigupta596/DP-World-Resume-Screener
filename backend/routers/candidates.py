@@ -55,10 +55,16 @@ def _process_one(role_id: str, file_name: str, contents: bytes) -> dict:
         storage_path = None
         result["error_msg"] = f"Storage upload failed: {e}"
 
+    # Content hash for dedup. Computed before insert so the row carries it.
+    from services.embedder import compute_text_hash, copy_chunks, embed_and_store_candidate
+
+    cv_text_hash = compute_text_hash(cv_text) if cv_text else None
+
     row = {
         "role_id": role_id,
         "name": name,
         "cv_text": cv_text or None,
+        "cv_text_hash": cv_text_hash,
         "cv_file_path": storage_path,
         "file_name": file_name,
         "status": "error" if (scanned or result["status"] == "error") else "pending",
@@ -71,11 +77,37 @@ def _process_one(role_id: str, file_name: str, contents: bytes) -> dict:
     inserted = sb.table("candidates").insert(row).execute()
     candidate_id = inserted.data[0]["id"] if inserted.data else None
 
-    # RAG-only: embed every newly-inserted CV before returning. If this
-    # fails the caller sees a 500 — demo policy is no silent fallbacks.
-    if candidate_id and cv_text:
-        from services.embedder import embed_and_store_candidate
-        embed_and_store_candidate(candidate_id, cv_text)
+    # RAG-only: every successful upload ends with chunks available for
+    # retrieval. Try the cache-hit path first (copy chunks from a prior
+    # candidate with the same cv_text_hash); fall through to embedding only
+    # on cache miss. No silent failures — exceptions propagate.
+    if candidate_id and cv_text and cv_text_hash:
+        cached = (
+            sb.table("candidates")
+            .select("id")
+            .eq("cv_text_hash", cv_text_hash)
+            .neq("id", candidate_id)
+            .limit(5)
+            .execute()
+            .data
+            or []
+        )
+        copied = False
+        for c in cached:
+            try:
+                n = copy_chunks(c["id"], candidate_id)
+                logger.info(
+                    "cv_text cache hit; copied %d chunks from %s for %s",
+                    n, c["id"][:8], candidate_id[:8],
+                )
+                copied = True
+                break
+            except RuntimeError:
+                # That source happened to have no chunks; try the next match.
+                continue
+        if not copied:
+            n = embed_and_store_candidate(candidate_id, cv_text)
+            logger.info("cv_text cache miss; embedded %d chunks for %s", n, candidate_id[:8])
 
     result["candidate_id"] = candidate_id
     result["name"] = name

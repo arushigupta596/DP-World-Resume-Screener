@@ -11,8 +11,10 @@ honest error instead of silent skips.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import re
 
 import httpx
 
@@ -27,6 +29,51 @@ EMBEDDING_DIM = 1536
 # preserves context across boundaries.
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def compute_text_hash(text: str) -> str:
+    """Stable SHA-256 of a CV's parsed text. Whitespace-normalized and
+    case-folded so two visually-identical CVs that differ only in trailing
+    whitespace or capitalization still match."""
+    if not text:
+        return ""
+    normalized = _WS_RE.sub(" ", text.strip().lower())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def copy_chunks(source_candidate_id: str, target_candidate_id: str) -> int:
+    """Copy resume_chunks rows from one candidate to another, keeping the
+    chunk_text + embedding intact. Returns the number of rows copied.
+    Raises if source has 0 chunks (caller should fall through to embedding)."""
+    sb = get_client()
+    src = (
+        sb.table("resume_chunks")
+        .select("chunk_index, chunk_text, embedding")
+        .eq("candidate_id", source_candidate_id)
+        .order("chunk_index")
+        .execute()
+        .data
+        or []
+    )
+    if not src:
+        raise RuntimeError(f"Source candidate {source_candidate_id} has no chunks")
+
+    rows = [
+        {
+            "candidate_id": target_candidate_id,
+            "chunk_index": r["chunk_index"],
+            "chunk_text": r["chunk_text"],
+            "embedding": r["embedding"],
+        }
+        for r in src
+    ]
+    # Wipe any existing chunks for target (e.g., from a partial earlier upload).
+    sb.table("resume_chunks").delete().eq("candidate_id", target_candidate_id).execute()
+    sb.table("resume_chunks").insert(rows).execute()
+    return len(rows)
 
 
 def chunk_cv_text(text: str) -> list[str]:

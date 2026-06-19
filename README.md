@@ -94,12 +94,17 @@ Embeddings are routed through **OpenRouter** using the same `OPENROUTER_API_KEY`
 **Setup (one-time):**
 
 1. **Enable pgvector** in your Supabase project: Dashboard → Database → Extensions → search for "vector" → enable.
-2. **Run the migration**: paste `backend/sql/03_rag.sql` into the Supabase SQL editor and run.
+2. **Run the migrations** in the Supabase SQL editor, in order:
+   - `backend/sql/03_rag.sql` (pgvector + chunks table + hybrid-search RPCs)
+   - `backend/sql/04_cv_hash.sql` (content hash for re-upload dedup)
 3. **Backfill existing candidates** (if you already have uploads in the DB):
    ```
    cd backend && source .venv/bin/activate
-   python backfill_embeddings.py
+   python backfill_embeddings.py   # embed any CV that has no chunks
+   python backfill_cv_hashes.py    # hash any CV that has no cv_text_hash
    ```
+
+**Re-upload dedup:** identical CV text (whitespace-normalized) shares chunks via the `cv_text_hash` column. Cache hit on a re-upload is ~100ms (a row copy) instead of ~2s (an OpenRouter embeddings call).
 
 **Demo policy: no fallbacks.** RAG is required. If embeddings fail, uploads and scoring fail loudly. This is intentional — the demo should surface real errors instead of silently degrading to a different code path.
 

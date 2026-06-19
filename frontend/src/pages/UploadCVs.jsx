@@ -29,10 +29,25 @@ export default function UploadCVs() {
     getPreloadedInfo().then(setPreloadInfo).catch(() => {})
   }, [roleId])
 
+  const [preloadProgress, setPreloadProgress] = useState(0)
+
   const handleLoadPreloaded = async () => {
     setError('')
     setPreloading(true)
     setPreloadResult(null)
+    setPreloadProgress(0)
+
+    // Smooth determinate progress bar. We don't have per-item events from
+    // the backend, so animate based on an estimated duration and snap to
+    // 100% when the response lands.
+    const estimatedMs = Math.max(4000, (preloadInfo.count || 50) * 100)
+    const startedAt = Date.now()
+    const tickHandle = setInterval(() => {
+      const elapsed = Date.now() - startedAt
+      const pct = Math.min(95, (elapsed / estimatedMs) * 100)
+      setPreloadProgress(pct)
+    }, 120)
+
     try {
       const res = await loadPreloaded(roleId)
       setPreloadResult(res)
@@ -40,8 +55,14 @@ export default function UploadCVs() {
     } catch (e) {
       setError(e.message || 'Failed to load pre-cached resumes')
     } finally {
+      clearInterval(tickHandle)
+      setPreloadProgress(100)
       setPreloading(false)
     }
+  }
+
+  const handleViewRanked = () => {
+    navigate(`/role/${roleId}/scoring`)
   }
 
   const handleClear = async () => {
@@ -128,29 +149,61 @@ export default function UploadCVs() {
 
       {preloadInfo.available && (
         <div className="card preload-banner" style={{ marginBottom: 16 }}>
-          <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
-            <div style={{ flex: 1 }}>
+          <div className="row" style={{ alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 260 }}>
               <div className="row" style={{ gap: 8, marginBottom: 4 }}>
                 <PreloadIcon />
                 <span className="h2" style={{ margin: 0 }}>
                   Pre-cached resumes ({preloadInfo.count})
                 </span>
+                {preloadResult && (
+                  <span className="badge shortlist">
+                    Loaded {preloadResult.loaded}{preloadResult.skipped ? ` · ${preloadResult.skipped} already in role` : ''}
+                  </span>
+                )}
               </div>
               <div className="muted" style={{ fontSize: 13 }}>
-                {preloadResult
-                  ? `Loaded ${preloadResult.loaded} new candidate${preloadResult.loaded === 1 ? '' : 's'}${preloadResult.skipped ? ` · skipped ${preloadResult.skipped} already in role` : ''}.`
-                  : 'Skip the upload + embedding step. Inserts candidates with pre-computed chunks straight into the active role.'}
+                {preloading
+                  ? 'Inserting candidates with cached embeddings and pre-scored results…'
+                  : preloadResult
+                    ? 'Candidates are loaded with full scoring ready. No LLM round-trip needed.'
+                    : 'Skip the upload + embedding + scoring steps. Loads candidates with pre-computed chunks and pre-scored results straight into the active role.'}
               </div>
+
+              {(preloading || preloadProgress > 0) && (
+                <div className="preload-progress" style={{ marginTop: 12 }}>
+                  <div className="preload-progress-bar">
+                    <div
+                      className="preload-progress-fill"
+                      style={{ width: `${preloadProgress}%` }}
+                    />
+                  </div>
+                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                    {preloading
+                      ? `Loading… ${Math.round(preloadProgress)}%`
+                      : `Done · 100%`}
+                  </div>
+                </div>
+              )}
             </div>
-            <button className="primary" onClick={handleLoadPreloaded} disabled={preloading}>
-              {preloading
-                ? <><span className="spinner" />&nbsp;Loading…</>
-                : preloadResult ? 'Re-load' : `Load ${preloadInfo.count} pre-cached resumes`}
-            </button>
-            {preloadResult && (
-              <button className="primary" onClick={handleContinue}>
-                Continue to criteria →
+
+            {!preloadResult && (
+              <button className="primary" onClick={handleLoadPreloaded} disabled={preloading}>
+                {preloading
+                  ? <><span className="spinner" />&nbsp;Loading…</>
+                  : `Load ${preloadInfo.count} pre-cached resumes`}
               </button>
+            )}
+
+            {preloadResult && (
+              <>
+                <button onClick={handleLoadPreloaded} disabled={preloading}>
+                  Re-load
+                </button>
+                <button className="primary" onClick={handleViewRanked}>
+                  View ranked results →
+                </button>
+              </>
             )}
           </div>
         </div>

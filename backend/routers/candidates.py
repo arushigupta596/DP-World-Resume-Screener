@@ -272,6 +272,23 @@ async def load_preloaded(role_id: str):
             ]
             sb.table("resume_chunks").insert(rows).execute()
 
+        # Pre-baked score? Insert it and mark the candidate scored so the
+        # frontend goes straight to results without an LLM round-trip.
+        cached_score = e.get("score")
+        if cached_score:
+            score_row = {
+                "candidate_id": cand_id,
+                "role_id": role_id,
+                "criteria_scores": cached_score.get("criteria_scores", {}),
+                "total_score": cached_score.get("total_score"),
+                "recommendation": cached_score.get("recommendation"),
+                "bonus_tools": cached_score.get("bonus_tools", []),
+                "risk_flags": cached_score.get("risk_flags", []),
+                "ai_summary": _strip_nul(cached_score.get("ai_summary", "")),
+            }
+            sb.table("scores").insert(score_row).execute()
+            sb.table("candidates").update({"status": "scored"}).eq("id", cand_id).execute()
+
         loaded += 1
 
     logger.info("Preloaded resumes: loaded=%d skipped=%d", loaded, skipped)
